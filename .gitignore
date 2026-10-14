@@ -1,0 +1,62 @@
+# ==============================
+# Operating system and editor
+# ==============================
+Thumbs.db
+.DS_Store
+.vscode/
+*.swp
+*.tmp
+*.bak
+
+# ==============================
+# Python generated files
+# ==============================
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# ==============================
+# Environment variables and secrets
+# ==============================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials/
+
+# ==============================
+# Raw security logs and exports
+# ==============================
+*.evtx
+*.etl
+*.pcap
+*.pcapng
+*.har
+raw-logs/
+raw_logs/
+private-evidence/
+private_evidence/
+
+# ==============================
+# Large archives and installers
+# ==============================
+*.zip
+*.7z
+*.rar
+*.iso
+*.msi
+*.exe
+
+# ==============================
+# Local databases and temporary output
+# ==============================
+*.sqlite
+*.sqlite3
+*.db
+*.log
+temp/
+tmp/
