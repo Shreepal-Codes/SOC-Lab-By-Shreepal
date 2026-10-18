@@ -1,8 +1,9 @@
-﻿# Detection: Office-launched scripting tool review
-# Source: Windows Security Event ID 4688
-# Severity: Review required; not proof of compromise
+﻿
+# Office-to-Scripting-Tool Process Review
+# Reads Security Event ID 4688; does not execute or block processes.
 
-$lookbackHours = 24
+$ErrorActionPreference = 'Stop'
+$startTime = (Get-Date).AddHours(-24)
 
 $officeProcesses = @(
     'winword.exe',
@@ -19,58 +20,138 @@ $scriptProcesses = @(
     'mshta.exe'
 )
 
-$startTime = (Get-Date).AddHours(-$lookbackHours)
+Write-Host "Office-to-Scripting-Tool Process Review"
+Write-Host "Window start: $startTime"
+Write-Host ""
 
-$events = @(
-    Get-WinEvent -FilterHashtable @{
-        LogName   = 'Security'
-        Id        = 4688
-        StartTime = $startTime
-    } -ErrorAction SilentlyContinue
-)
-
-Write-Host "4688 events retrieved: $($events.Count)"
-
-if ($events.Count -eq 0) {
-    Write-Host "No process-creation events found in the selected time window."
-    exit
+try {
+    $events = @(
+        Get-WinEvent -FilterHashtable @{
+            LogName   = 'Security'
+            Id        = 4688
+            StartTime = $startTime
+        } -ErrorAction Stop
+    )
+}
+catch {
+    Write-Host "ERROR: Could not read Security Event 4688."
+    Write-Host "Details: $($_.Exception.Message)"
+    Write-Host "Try running PowerShell as Administrator."
+    exit 1
 }
 
-$alerts = foreach ($event in $events) {
-    [xml]$xmlData = $event.ToXml()
-    $fields = @{}
+Write-Host "Events retrieved: $($events.Count)"
 
-    foreach ($item in $xmlData.Event.EventData.Data) {
-        $fields[$item.Name] = $item.'#text'
-    }
+if ($events.Count -eq 0) {
+    Write-Host "No Event 4688 records were found in this window."
+    Write-Host "No detection conclusion can be drawn from an empty result."
+    exit 0
+}
 
-    $processName = [System.IO.Path]::GetFileName(
-        [string]$fields['NewProcessName']
-    )
+$parsed = foreach ($event in $events) {
+    try {
+        [xml]$xmlData = $event.ToXml()
+        $fields = @{}
 
-    $parentName = [System.IO.Path]::GetFileName(
-        [string]$fields['ParentProcessName']
-    )
+        foreach ($item in $xmlData.Event.EventData.Data) {
+            $fields[$item.GetAttribute('Name')] = $item.InnerText
+        }
 
-    if (
-        ($officeProcesses -contains $parentName) -and
-        ($scriptProcesses -contains $processName)
-    ) {
+        $childPath = [string]$fields['NewProcessName']
+
+        # Prefer ParentProcessName, with CreatorProcessName as fallback.
+        $parentPath = [string]$fields['ParentProcessName']
+        if ([string]::IsNullOrWhiteSpace($parentPath)) {
+            $parentPath = [string]$fields['CreatorProcessName']
+        }
+
+        $child = if (-not [string]::IsNullOrWhiteSpace($childPath)) {
+            [System.IO.Path]::GetFileName($childPath)
+        } else {
+            $null
+        }
+
+        $parent = if (-not [string]::IsNullOrWhiteSpace($parentPath)) {
+            [System.IO.Path]::GetFileName($parentPath)
+        } else {
+            $null
+        }
+
+        $status = if (
+            [string]::IsNullOrWhiteSpace($child) -or
+            [string]::IsNullOrWhiteSpace($parent)
+        ) {
+            'Unevaluable'
+        } else {
+            'Evaluated'
+        }
+
+        $isMatch = $false
+        if ($status -eq 'Evaluated') {
+            $isMatch = (
+                ($officeProcesses -contains $parent) -and
+                ($scriptProcesses -contains $child)
+            )
+        }
+
         [PSCustomObject]@{
-            Time          = $event.TimeCreated
-            Severity      = 'Review'
-            ParentProcess = $parentName
-            Process       = $processName
-            User          = $fields['TargetUserName']
-            CommandLine   = $fields['CommandLine']
-            EventId       = 4688
-            Reason        = 'Office application launched a scripting tool'
+            Time       = $event.TimeCreated
+            EventId    = $event.Id
+            Parent     = $parent
+            Child      = $child
+            CommandLine = [string]$fields['CommandLine']
+            Status     = $status
+            IsMatch    = $isMatch
+        }
+    }
+    catch {
+        [PSCustomObject]@{
+            Time        = $event.TimeCreated
+            EventId     = $event.Id
+            Parent      = $null
+            Child       = $null
+            CommandLine = $null
+            Status      = 'ParseError'
+            IsMatch     = $false
         }
     }
 }
 
-if ($alerts) {
-    $alerts | Sort-Object Time -Descending | Format-List
-} else {
-    Write-Host "No Office-to-scripting-tool matches found in the last $lookbackHours hours."
+$matches = @($parsed | Where-Object {
+    $_.Status -eq 'Evaluated' -and $_.IsMatch
+})
+
+$unevaluable = @($parsed | Where-Object {
+    $_.Status -eq 'Unevaluable' -or $_.Status -eq 'ParseError'
+})
+
+Write-Host ""
+Write-Host "--- Summary ---"
+Write-Host "Events retrieved: $($events.Count)"
+Write-Host "Events processed: $($parsed.Count)"
+Write-Host "Evaluated events: $( @($parsed | Where-Object Status -eq 'Evaluated').Count )"
+Write-Host "Unevaluable / parse-error events: $($unevaluable.Count)"
+Write-Host "Office-to-scripting-tool matches: $($matches.Count)"
+
+if ($matches.Count -gt 0) {
+    Write-Host ""
+    Write-Host "--- Matches requiring investigation ---"
+    $matches |
+        Select-Object Time, Parent, Child, CommandLine |
+        Format-Table -AutoSize
 }
+else {
+    Write-Host ""
+    Write-Host "No matching process relationships found in this window."
+}
+
+if ($unevaluable.Count -gt 0) {
+    Write-Host ""
+    Write-Host "--- Sample unevaluable records ---"
+    $unevaluable |
+        Select-Object -First 10 Time, Parent, Child, Status |
+        Format-Table -AutoSize
+}
+
+Write-Host ""
+Write-Host "Review matches in context; a match is not proof of malicious activity."
