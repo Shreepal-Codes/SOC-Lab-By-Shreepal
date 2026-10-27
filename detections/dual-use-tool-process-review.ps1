@@ -1,10 +1,11 @@
-﻿# Detection: Dual-Use Windows Tool Review
+﻿
+# Detection: Dual-Use Windows Tool Review
 # Purpose: Flag selected process executions for analyst review.
 # Source: Windows Security Event ID 4688
 
-$lookbackHours = 24
+$script:LookbackHours = 24
 
-$reviewTools = @(
+$script:ReviewTools = @(
     'powershell.exe',
     'pwsh.exe',
     'wscript.exe',
@@ -16,14 +17,14 @@ $reviewTools = @(
     'bitsadmin.exe'
 )
 
-$officeProcesses = @(
+$script:OfficeProcesses = @(
     'winword.exe',
     'excel.exe',
     'powerpnt.exe',
     'outlook.exe'
 )
 
-$scriptProcesses = @(
+$script:ScriptProcesses = @(
     'powershell.exe',
     'pwsh.exe',
     'wscript.exe',
@@ -31,45 +32,62 @@ $scriptProcesses = @(
     'mshta.exe'
 )
 
-$startTime = (Get-Date).AddHours(-$lookbackHours)
-
-$events = Get-WinEvent -FilterHashtable @{
-    LogName   = 'Security'
-    Id        = 4688
-    StartTime = $startTime
-} -ErrorAction SilentlyContinue
-
-$alerts = foreach ($event in $events) {
-    [xml]$xmlData = $event.ToXml()
-    $fields = @{}
-
-    foreach ($item in $xmlData.Event.EventData.Data) {
-        $fields[$item.Name] = $item.'#text'
-    }
-
-    $processPath = [string]$fields['NewProcessName']
-    $parentPath  = [string]$fields['ParentProcessName']
-
-    $processName = [System.IO.Path]::GetFileName($processPath)
-    $parentName  = [System.IO.Path]::GetFileName($parentPath)
-
-    $matchedTool = $reviewTools -contains $processName
-    $officeScriptPair = (
-        ($officeProcesses -contains $parentName) -and
-        ($scriptProcesses -contains $processName)
+function ConvertFrom-ProcessCreationEvent {
+    param(
+        [Parameter(Mandatory = $true)]
+        $EventRecord
     )
 
-    if ($matchedTool) {
-        $reason = 'Review: selected dual-use Windows tool executed'
-        $priority = 'Low'
+    try {
+        [xml]$xmlData = $EventRecord.ToXml()
+        $fields = @{}
 
-        if ($officeScriptPair) {
-            $reason = 'Review: Office process launched a scripting tool'
-            $priority = 'Higher'
+        foreach ($item in $xmlData.Event.EventData.Data) {
+            $fields[[string]$item.Name] = [string]$item.'#text'
         }
 
-        [PSCustomObject]@{
-            Time          = $event.TimeCreated
+        $processPath = [string]$fields['NewProcessName']
+
+        # Windows event versions may expose different parent-process fields.
+        $parentPath = [string]$fields['ParentProcessName']
+        if ([string]::IsNullOrWhiteSpace($parentPath)) {
+            $parentPath = [string]$fields['CreatorProcessName']
+        }
+
+        if ([string]::IsNullOrWhiteSpace($processPath)) {
+            return [PSCustomObject]@{
+                Status = 'Unevaluable'
+                Reason = 'Missing NewProcessName field'
+            }
+        }
+
+        $processName = [System.IO.Path]::GetFileName($processPath)
+        $parentName = [System.IO.Path]::GetFileName($parentPath)
+
+        $matchedTool = $script:ReviewTools -contains $processName
+        $officeScriptPair = (
+            ($script:OfficeProcesses -contains $parentName) -and
+            ($script:ScriptProcesses -contains $processName)
+        )
+
+        if (-not $matchedTool) {
+            return [PSCustomObject]@{
+                Status = 'NoMatch'
+                Reason = 'Process is not in the review list'
+            }
+        }
+
+        $priority = 'Low'
+        $reason = 'Review: selected dual-use Windows tool executed'
+
+        if ($officeScriptPair) {
+            $priority = 'Higher'
+            $reason = 'Review: Office process launched a scripting tool'
+        }
+
+        return [PSCustomObject]@{
+            Status        = 'Alert'
+            Time          = $EventRecord.TimeCreated
             Priority      = $priority
             Process       = $processPath
             ParentProcess = $parentPath
@@ -79,12 +97,61 @@ $alerts = foreach ($event in $events) {
             EventId       = 4688
         }
     }
+    catch {
+        return [PSCustomObject]@{
+            Status = 'Error'
+            Reason = $_.Exception.Message
+        }
+    }
 }
 
-if ($alerts) {
-    $alerts |
-        Sort-Object Time -Descending |
-        Format-List
-} else {
-    Write-Host "No matching process events found in the last $lookbackHours hours."
+function Invoke-DualUseToolDetection {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Events
+    )
+
+    foreach ($eventRecord in $Events) {
+        ConvertFrom-ProcessCreationEvent -EventRecord $eventRecord
+    }
+}
+
+# Dot-sourcing this file loads its functions for testing.
+# Run the script normally to query recent Windows Security events.
+if ($MyInvocation.InvocationName -ne '.') {
+    $startTime = (Get-Date).AddHours(-$script:LookbackHours)
+
+    try {
+        $events = @(
+            Get-WinEvent -FilterHashtable @{
+                LogName   = 'Security'
+                Id        = 4688
+                StartTime = $startTime
+            } -ErrorAction Stop
+        )
+
+        $results = @(Invoke-DualUseToolDetection -Events $events)
+        $alerts = @($results | Where-Object Status -eq 'Alert')
+        $unevaluable = @($results | Where-Object Status -eq 'Unevaluable')
+        $errors = @($results | Where-Object Status -eq 'Error')
+
+        if ($alerts.Count -gt 0) {
+            $alerts |
+                Sort-Object Time -Descending |
+                Select-Object Time, Priority, Process, ParentProcess,
+                    User, CommandLine, Reason, EventId |
+                Format-List
+        }
+        else {
+            Write-Host "No matching process events found in the last $script:LookbackHours hours."
+        }
+
+        Write-Host "Events processed: $($results.Count)"
+        Write-Host "Alerts: $($alerts.Count)"
+        Write-Host "Unevaluable: $($unevaluable.Count)"
+        Write-Host "Errors: $($errors.Count)"
+    }
+    catch {
+        Write-Error "Could not query Windows Security events. Check permissions and audit-log availability. Details: $($_.Exception.Message)"
+    }
 }
