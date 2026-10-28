@@ -11,6 +11,7 @@ function New-TestEvent {
     param(
         [string]$Process,
         [string]$Parent = 'C:\Windows\explorer.exe',
+        [string]$CommandLine = 'test-command',
         [string]$XmlOverride
     )
 
@@ -22,7 +23,7 @@ function New-TestEvent {
             "<Data Name='NewProcessName'>$Process</Data>" +
             "<Data Name='ParentProcessName'>$Parent</Data>" +
             "<Data Name='TargetUserName'>TestUser</Data>" +
-            "<Data Name='CommandLine'>test-command</Data>" +
+            "<Data Name='CommandLine'>$CommandLine</Data>" +
             "</EventData></Event>"
     }
 
@@ -50,8 +51,7 @@ $tests = @(
         Event = (New-TestEvent -XmlOverride "<Event><EventData><Data Name='NewProcessName'>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Data></EventData></Event>")
         ExpectedStatus = 'Alert'
         ExpectedPriority = 'Low'
-    }
-
+    },
     @{
         Name = 'PowerShell is detected'
         Event = (New-TestEvent -Process 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe')
@@ -87,6 +87,27 @@ $tests = @(
         Event = (New-TestEvent -XmlOverride '<Event><EventData>')
         ExpectedStatus = 'Error'
         ExpectedPriority = ''
+    },
+    @{
+        Name = 'Recorded command line is marked Available'
+        Event = (New-TestEvent -Process 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -CommandLine 'powershell.exe -NoProfile')
+        ExpectedStatus = 'Alert'
+        ExpectedPriority = 'Low'
+        ExpectedCommandLineStatus = 'Available'
+    },
+    @{
+        Name = 'Missing command line is marked Missing'
+        Event = (New-TestEvent -XmlOverride "<Event><EventData><Data Name='NewProcessName'>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Data><Data Name='ParentProcessName'>C:\Windows\explorer.exe</Data><Data Name='TargetUserName'>TestUser</Data></EventData></Event>")
+        ExpectedStatus = 'Alert'
+        ExpectedPriority = 'Low'
+        ExpectedCommandLineStatus = 'Missing'
+    },
+    @{
+        Name = 'Whitespace-only command line is marked Missing'
+        Event = (New-TestEvent -Process 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -CommandLine '   ')
+        ExpectedStatus = 'Alert'
+        ExpectedPriority = 'Low'
+        ExpectedCommandLineStatus = 'Missing'
     }
 )
 
@@ -103,12 +124,28 @@ foreach ($test in $tests) {
         $priority -eq $test.ExpectedPriority
     )
 
+    if ($test.ContainsKey('ExpectedCommandLineStatus')) {
+        $actualEvidenceStatus = ''
+        if ($result.PSObject.Properties['CommandLineStatus']) {
+            $actualEvidenceStatus = [string]$result.CommandLineStatus
+        }
+
+        $ok = $ok -and (
+            $actualEvidenceStatus -eq $test.ExpectedCommandLineStatus
+        )
+    }
+
     if ($ok) {
         Write-Host "PASS: $($test.Name)" -ForegroundColor Green
         $passed++
     }
     else {
-        Write-Host "FAIL: $($test.Name) - Status=$($result.Status), Priority=$priority" -ForegroundColor Red
+        $actualEvidenceStatus = ''
+        if ($result.PSObject.Properties['CommandLineStatus']) {
+            $actualEvidenceStatus = [string]$result.CommandLineStatus
+        }
+
+        Write-Host "FAIL: $($test.Name) - Status=$($result.Status), Priority=$priority, CommandLineStatus=$actualEvidenceStatus" -ForegroundColor Red
         $failed++
     }
 }

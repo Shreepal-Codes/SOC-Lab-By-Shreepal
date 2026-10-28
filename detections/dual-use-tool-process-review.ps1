@@ -50,8 +50,17 @@ function ConvertFrom-ProcessCreationEvent {
 
         # Windows event versions may expose different parent-process fields.
         $parentPath = [string]$fields['ParentProcessName']
+
         if ([string]::IsNullOrWhiteSpace($parentPath)) {
             $parentPath = [string]$fields['CreatorProcessName']
+        }
+
+        # Explicitly identify whether command-line evidence is present.
+        $commandLine = [string]$fields['CommandLine']
+        $commandLineStatus = 'Available'
+
+        if ([string]::IsNullOrWhiteSpace($commandLine)) {
+            $commandLineStatus = 'Missing'
         }
 
         if ([string]::IsNullOrWhiteSpace($processPath)) {
@@ -65,6 +74,7 @@ function ConvertFrom-ProcessCreationEvent {
         $parentName = [System.IO.Path]::GetFileName($parentPath)
 
         $matchedTool = $script:ReviewTools -contains $processName
+
         $officeScriptPair = (
             ($script:OfficeProcesses -contains $parentName) -and
             ($script:ScriptProcesses -contains $processName)
@@ -86,15 +96,16 @@ function ConvertFrom-ProcessCreationEvent {
         }
 
         return [PSCustomObject]@{
-            Status        = 'Alert'
-            Time          = $EventRecord.TimeCreated
-            Priority      = $priority
-            Process       = $processPath
-            ParentProcess = $parentPath
-            User          = $fields['TargetUserName']
-            CommandLine   = $fields['CommandLine']
-            Reason        = $reason
-            EventId       = 4688
+            Status            = 'Alert'
+            Time              = $EventRecord.TimeCreated
+            Priority          = $priority
+            Process           = $processPath
+            ParentProcess     = $parentPath
+            User              = $fields['TargetUserName']
+            CommandLine       = $commandLine
+            CommandLineStatus = $commandLineStatus
+            Reason            = $reason
+            EventId           = 4688
         }
     }
     catch {
@@ -139,7 +150,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             $alerts |
                 Sort-Object Time -Descending |
                 Select-Object Time, Priority, Process, ParentProcess,
-                    User, CommandLine, Reason, EventId |
+                    User, CommandLine, CommandLineStatus, Reason, EventId |
                 Format-List
         }
         else {
