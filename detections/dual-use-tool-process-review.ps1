@@ -89,10 +89,18 @@ function ConvertFrom-ProcessCreationEvent {
 
         $priority = 'Low'
         $reason = 'Review: selected dual-use Windows tool executed'
+        $triageGuidance = 'Review the command line, parent process, and user activity to determine whether the execution was expected.'
 
         if ($officeScriptPair) {
             $priority = 'Higher'
             $reason = 'Review: Office process launched a scripting tool'
+            $triageGuidance = 'Review the Office document origin, user activity, and scripting-tool command line. Determine whether the document or process launch was expected.'
+        }
+        elseif ($parentName -eq 'explorer.exe' -and $processName -in @('powershell.exe', 'pwsh.exe')) {
+            $triageGuidance = 'Determine whether the user intentionally launched PowerShell. Review the command line and surrounding user activity.'
+        }
+        elseif ($parentName -eq 'svchost.exe' -and $processName -eq 'rundll32.exe') {
+            $triageGuidance = 'Review the rundll32 command line, referenced DLL path, and associated Windows service context.'
         }
 
         return [PSCustomObject]@{
@@ -105,6 +113,7 @@ function ConvertFrom-ProcessCreationEvent {
             CommandLine       = $commandLine
             CommandLineStatus = $commandLineStatus
             Reason            = $reason
+            TriageGuidance    = $triageGuidance
             EventId           = 4688
         }
     }
@@ -150,7 +159,8 @@ if ($MyInvocation.InvocationName -ne '.') {
             $alerts |
                 Sort-Object Time -Descending |
                 Select-Object Time, Priority, Process, ParentProcess,
-                    User, CommandLine, CommandLineStatus, Reason, EventId |
+                    User, CommandLine, CommandLineStatus, Reason,
+                    TriageGuidance, EventId |
                 Format-List
         }
         else {

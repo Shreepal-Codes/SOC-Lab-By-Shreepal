@@ -102,6 +102,34 @@ $tests = @(
         ExpectedPriority = 'Low'
         ExpectedCommandLineStatus = 'Missing'
     },
+        @{
+        Name = 'Office to PowerShell provides Office-specific triage guidance'
+        Event = (New-TestEvent -Process 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Parent 'C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE')
+        ExpectedStatus = 'Alert'
+        ExpectedPriority = 'Higher'
+        ExpectedGuidanceContains = 'Office document origin'
+    },
+    @{
+        Name = 'Explorer to PowerShell provides user-activity guidance'
+        Event = (New-TestEvent -Process 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Parent 'C:\Windows\explorer.exe')
+        ExpectedStatus = 'Alert'
+        ExpectedPriority = 'Low'
+        ExpectedGuidanceContains = 'intentionally launched PowerShell'
+    },
+    @{
+        Name = 'svchost to rundll32 provides DLL investigation guidance'
+        Event = (New-TestEvent -Process 'C:\Windows\System32\rundll32.exe' -Parent 'C:\Windows\System32\svchost.exe')
+        ExpectedStatus = 'Alert'
+        ExpectedPriority = 'Low'
+        ExpectedGuidanceContains = 'DLL path'
+    },
+    @{
+        Name = 'Other dual-use tool provides general triage guidance'
+        Event = (New-TestEvent -Process 'C:\Windows\System32\certutil.exe' -Parent 'C:\Windows\explorer.exe')
+        ExpectedStatus = 'Alert'
+        ExpectedPriority = 'Low'
+        ExpectedGuidanceContains = 'command line'
+    }
     @{
         Name = 'Whitespace-only command line is marked Missing'
         Event = (New-TestEvent -Process 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -CommandLine '   ')
@@ -134,7 +162,16 @@ foreach ($test in $tests) {
             $actualEvidenceStatus -eq $test.ExpectedCommandLineStatus
         )
     }
-
+    if ($test.ContainsKey('ExpectedGuidanceContains')) {
+        $guidance = ''
+        if ($result.PSObject.Properties['TriageGuidance']) {
+            $guidance = [string]$result.TriageGuidance
+        }
+        $ok = $ok -and (
+            -not [string]::IsNullOrWhiteSpace($guidance) -and
+            $guidance.Contains($test.ExpectedGuidanceContains)
+        )
+    }
     if ($ok) {
         Write-Host "PASS: $($test.Name)" -ForegroundColor Green
         $passed++
